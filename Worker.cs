@@ -137,7 +137,7 @@ namespace qshDownloader
 													throw ex;
 
 												Task.Delay(3000, stoppingToken);
-												_logger.LogInformation("\t\tПопытка №{int} загрузки {string}", i, k.Groups[2].Value);
+												_logger.LogInformation("\t\tПопытка №{int} загрузки {string}", i, fileName);
 											}
 									});
 								}
