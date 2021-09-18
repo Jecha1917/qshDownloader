@@ -60,10 +60,10 @@ namespace qshDownloader
 			while (!stoppingToken.IsCancellationRequested)
 			{
 				DateTime startTime = DateTime.Now;
-				_logger.LogInformation("Загрузчик запущен: {time}", DateTimeOffset.Now);
+				_logger.LogInformation("Р—Р°РіСЂСѓР·С‡РёРє Р·Р°РїСѓС‰РµРЅ: {time}", DateTimeOffset.Now);
 				foreach (var urlQshServer in config.UrlQshServers)
 				{
-					_logger.LogInformation("Сервер: {string}", urlQshServer);
+					_logger.LogInformation("РЎРµСЂРІРµСЂ: {string}", urlQshServer);
 					var url = new Uri(urlQshServer);
 					List<string> dirs;
 
@@ -96,11 +96,11 @@ namespace qshDownloader
 					if (availableDays?.Count() > 0)
 					{
 						IEnumerable<string> newDays = availableDays.Except(dirs);
-						_logger.LogInformation("\tНайдено {int} новых дней к загрузке", newDays.Count());
+						_logger.LogInformation("\tРќР°Р№РґРµРЅРѕ {int} РЅРѕРІС‹С… РґРЅРµР№ Рє Р·Р°РіСЂСѓР·РєРµ", newDays.Count());
 
 						foreach (var day in newDays)
 						{
-							_logger.LogInformation("\t\tЗагрузка дня {string}", day);
+							_logger.LogInformation("\t\tР—Р°РіСЂСѓР·РєР° РґРЅСЏ {string}", day);
 							var dayPath = $"{config.HistoryPath}\\{day}";
 							var dayPathTmp = $"{config.HistoryPath}\\{day}.tmp";
 
@@ -137,7 +137,7 @@ namespace qshDownloader
 													throw ex;
 
 												Task.Delay(3000, stoppingToken);
-												_logger.LogInformation("\t\tПопытка №{int} загрузки {string}", i, fileName);
+												_logger.LogInformation("\t\tРџРѕРїС‹С‚РєР° в„–{int} Р·Р°РіСЂСѓР·РєРё {string}", i, fileName);
 											}
 									});
 								}
@@ -147,12 +147,12 @@ namespace qshDownloader
 
 							dirs.Add(day);
 							_cache.Set(day, files);
-							_logger.LogInformation("\tУспешно загружено в {string}", dayPath);
+							_logger.LogInformation("\tРЈСЃРїРµС€РЅРѕ Р·Р°РіСЂСѓР¶РµРЅРѕ РІ {string}", dayPath);
 						}
 					}
 					else
 					{
-						_logger.LogInformation("\tНет новых данных.");
+						_logger.LogInformation("\tРќРµС‚ РЅРѕРІС‹С… РґР°РЅРЅС‹С….");
 					}
 				}
 

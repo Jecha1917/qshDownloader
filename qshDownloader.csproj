@@ -3,6 +3,7 @@
   <PropertyGroup>
     <TargetFramework>netcoreapp3.1</TargetFramework>
     <UserSecretsId>dotnet-qshDownloader-7551155C-8E77-4F17-AD11-F0C4E7550A3E</UserSecretsId>
+    <StartupObject>qshDownloader.Program</StartupObject>
   </PropertyGroup>
 
   <ItemGroup>
