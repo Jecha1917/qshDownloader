@@ -1,0 +1,9 @@
+
+version: '3.4'
+
+services:
+  qshdownloader:
+    image: qshdownloader
+    build:
+      context: .
+      dockerfile: ./Dockerfile

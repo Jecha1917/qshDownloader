@@ -1,5 +1,7 @@
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Options;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -18,11 +20,16 @@ namespace qshDownloader
 			Host.CreateDefaultBuilder(args)
 				.ConfigureServices((hostContext, services) =>
 				{
+					IConfiguration config = hostContext.Configuration;
+
+					services.AddOptions();
 					services.AddHostedService<Worker>();
+					services.AddTransient<IDownloader, Downloader>();
+					services.AddTransient<IFolderEnumerator, HttpFolderEnumerator>();
 
-					// Install-Package Microsoft.Extensions.Caching.Memory -Version 3.1.01
 					services.AddMemoryCache();
-
+					services.Configure<WorkerConfig>(config.GetSection("WorkerConfig"));
+					services.Configure<DownloaderConfig>(config.GetSection("DownloaderConfig"));
 				});
 	}
 }

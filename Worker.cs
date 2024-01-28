@@ -10,49 +10,70 @@ using System.IO;
 using System.Text.RegularExpressions;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Caching.Memory;
+using Microsoft.Extensions.Options;
+using System.Net.Http;
 
 namespace qshDownloader
 {
-	public class WorkerConfig
-	{
-		public string HistoryPath { get; set; }
-		public string[] UrlQshServers { get; set; }
-		public string ParseQshUrls { get; set; }
-		public string ParseDate { get; set; }
-		public int HoursInterval { get; set; }
-	}
-
 	public class Worker : BackgroundService
 	{
-		private readonly IConfiguration _configuration;
-		private WorkerConfig config;
-		private IMemoryCache _cache;
+		private readonly WorkerConfig _config;
+        private readonly DownloaderConfig _downloaderConfig;
+        private IMemoryCache _cache;
+        private readonly ILogger _logger;
+        private readonly IEnumerable<IDownloader> _downloaders;
+		private readonly IEnumerable<IFolderEnumerator> _folderEnumerators;
 
 		/// <summary>
 		/// Match
 		/// Group[1] = relative url to file
 		/// Group[2] = file name
 		/// </summary>
-		private Regex parseQshUrls;
+		private readonly Regex _parseFileUrls;
 
 		/// <summary>
 		/// Match
 		/// Group[1] = date
 		/// </summary>
-		private Regex parseDates;
+		private readonly Regex _parseDates;
 
-		private readonly ILogger<Worker> _logger;
+		private readonly int _retryCount;
+        private readonly int _retryDelay;
 
-		public Worker(ILogger<Worker> logger, IConfiguration configuration, IMemoryCache cache)
+        /// <summary>
+        /// Service Worker.
+        /// </summary>
+        /// <param name="logger">logger.</param>
+        /// <param name="cache">cache.</param>
+        /// <param name="config">worker config.</param>
+        /// <param name="downloaderConfig">downloader config.</param>
+        /// <param name="folderEnumerators">folder enumerators/</param>
+        /// <param name="downloaders">downloaders.</param>
+        /// <exception cref="ArgumentNullException">exception.</exception>
+        /// <exception cref="InvalidOperationException">exception.</exception>
+        public Worker(
+			ILogger<Worker> logger,
+			IMemoryCache cache,
+			IOptions<WorkerConfig> config,
+			IOptions<DownloaderConfig> downloaderConfig,
+			IEnumerable<IFolderEnumerator> folderEnumerators,
+			IEnumerable<IDownloader> downloaders)
 		{
-			_logger = logger;
-			_configuration = configuration;
+			_downloaderConfig = downloaderConfig?.Value ?? throw new ArgumentNullException(nameof(downloaderConfig));
+			_logger = logger ?? throw new ArgumentNullException(nameof(logger));
+			this._config = config?.Value ?? throw new ArgumentNullException(nameof(config));
+			_parseDates = new Regex(_downloaderConfig.ParseDate);
+			_parseFileUrls = new Regex(_downloaderConfig.ParseFileUrls);
+			_retryCount = _downloaderConfig.RetryCount > 0 ? _downloaderConfig.RetryCount : 1;
+			_retryDelay = _downloaderConfig.RetryDelay > 0 ? _downloaderConfig.RetryDelay : 3000;
 
-			config = _configuration.GetSection("WorkerConfig").Get<WorkerConfig>();
+            _cache = cache ?? throw new ArgumentNullException(nameof(cache));
+			_folderEnumerators = folderEnumerators ?? throw new ArgumentNullException(nameof(folderEnumerators));
 
-			parseDates = new Regex(config.ParseDate);
-			parseQshUrls = new Regex(config.ParseQshUrls);
-			_cache = cache;
+			if(folderEnumerators.Count() == 0)
+			{
+				throw new InvalidOperationException("No folder enumerators are registered.");
+			}
 		}
 
 		protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -60,49 +81,46 @@ namespace qshDownloader
 			while (!stoppingToken.IsCancellationRequested)
 			{
 				DateTime startTime = DateTime.Now;
-				_logger.LogInformation("Загрузчик запущен: {time}", DateTimeOffset.Now);
-				foreach (var urlQshServer in config.UrlQshServers)
+				_logger.LogInformation("Downloader started at: {time}", DateTimeOffset.Now);
+
+				foreach (var urlServer in _config.ServerUrls)
 				{
-					_logger.LogInformation("Сервер: {string}", urlQshServer);
-					var url = new Uri(urlQshServer);
+                    IEnumerable<string> availableDays = await _folderEnumerators.First().Enumerate(new Uri(urlServer), CancellationToken.None);
+
+					_logger.LogInformation("Server: {string}", urlServer);
+					var url = new Uri(urlServer);
 					List<string> dirs;
 
 					if (!_cache.TryGetValue("dirs", out dirs))
 					{
-						dirs = Directory.EnumerateDirectories(config.HistoryPath).Where(k => !k.EndsWith(".tmp")).Select(k => k.Substring(k.Length - 10)).ToList();
+						dirs = Directory.EnumerateDirectories(_config.HistoryPath)
+							.Where(dir => !dir.EndsWith(".tmp"))
+							.Select(dir => dir.Substring(dir.Length - 10))
+							.ToList();
+
 						_cache.Set("dirs", dirs);
 
-						dirs.AsParallel().ForAll(k =>
-							{
-								var files = Directory.EnumerateFiles($"{config.HistoryPath}\\{k}");
-								_cache.Set(k, files.ToList());
-								files.AsParallel().ForAll(k => _cache.Set(k, (int?)1));
-							});
-
-					}
-
-					IEnumerable<string> availableDays = null;
-
-					using (var stream = WebRequest.Create(url).GetResponse().GetResponseStream())
-					{
-						using (var streamReader = new StreamReader(stream))
+						await Task.WhenAll(dirs.Select(async dir =>
 						{
-							var data = await streamReader.ReadToEndAsync();
-							var m = parseDates.Matches(data);
-							availableDays = m.Select(k => k.Groups[1].Value).ToList();
-						}
+                            var files = await Task.Run(() =>
+								Directory.EnumerateFiles($"{_config.HistoryPath}\\{dir}"));
+
+                            _cache.Set(dir, files.ToList());
+                            files.ToList().ForEach(file =>
+								_cache.Set(file, FileDownloadStatusType.Success));
+                        }));
 					}
 
-					if (availableDays?.Count() > 0)
+					if (availableDays.Count() > 0)
 					{
 						IEnumerable<string> newDays = availableDays.Except(dirs);
-						_logger.LogInformation("\tНайдено {int} новых дней к загрузке", newDays.Count());
+						_logger.LogInformation("\tFounded {int} new folder to downloading", newDays.Count());
 
 						foreach (var day in newDays)
 						{
-							_logger.LogInformation("\t\tЗагрузка дня {string}", day);
-							var dayPath = $"{config.HistoryPath}\\{day}";
-							var dayPathTmp = $"{config.HistoryPath}\\{day}.tmp";
+							_logger.LogInformation("\t\tLoading folder {string}", day);
+							var dayPath = $"{_config.HistoryPath}\\{day}";
+							var dayPathTmp = $"{_config.HistoryPath}\\{day}.tmp";
 
 							if (Directory.Exists(dayPathTmp))
 								Directory.Delete(dayPathTmp, true);
@@ -110,53 +128,53 @@ namespace qshDownloader
 							Directory.CreateDirectory(dayPathTmp);
 							List<string> files = new List<string>();
 
-							using (var stream = WebRequest.Create(new Uri(baseUri: url, day)).GetResponse().GetResponseStream())
+							using var client = new HttpClient();
+							var data = await client.GetStringAsync(new Uri(baseUri: url, day), stoppingToken);
+                            var listFiles = _parseFileUrls.Matches(data);
+
+							await Task.WhenAll(listFiles.Select(async k =>
 							{
-								using (var streamReader = new StreamReader(stream))
-								{
-									var data = await streamReader.ReadToEndAsync();
-									var listFiles = parseQshUrls.Matches(data);
+                                string fileName = k.Groups[2].Value;
+                                for (int i = 0; i < _retryCount; i++)
+                                    try
+                                    {
+                                        var response = await client.GetAsync(new Uri(url, k.Groups[1].Value), stoppingToken);
+										response.EnsureSuccessStatusCode();
 
-									listFiles.AsParallel().ForAll(k =>
-									{
-										WebClient webClient = new WebClient() { BaseAddress = url.OriginalString };
-										string fileName = k.Groups[2].Value;
-										for (int i = 0; i < 10; i++)
-											try
-											{
-												webClient.DownloadFile(new Uri(url, k.Groups[1].Value), $"{dayPathTmp}\\{fileName}");
+										using var content = response.Content;
+										using var fileStream = new FileStream($"{dayPathTmp}\\{fileName}", FileMode.CreateNew);
 
-												files.Add(fileName);
-												_cache.Set(fileName, (int?)1 );
+										await content.CopyToAsync(fileStream);
 
-												break;
-											}
-											catch (Exception ex)
-											{
-												if (i == 10)
-													throw ex;
+                                        files.Add(fileName);
+                                        _cache.Set(fileName, FileDownloadStatusType.Success);
 
-												Task.Delay(3000, stoppingToken);
-												_logger.LogInformation("\t\tПопытка №{int} загрузки {string}", i, fileName);
-											}
-									});
-								}
-							}
+                                        break;
+                                    }
+                                    catch (Exception)
+                                    {
+                                        if (i == 10)
+                                            throw;
+
+                                        await Task.Delay(_retryDelay, stoppingToken);
+                                        _logger.LogInformation("\t\tTry N:{int} loading {string}", i, fileName);
+                                    }
+                            }));
 
 							Directory.Move(dayPathTmp, dayPath);
 
 							dirs.Add(day);
 							_cache.Set(day, files);
-							_logger.LogInformation("\tУспешно загружено в {string}", dayPath);
+							_logger.LogInformation("\tLoading success to {string}", dayPath);
 						}
 					}
 					else
 					{
-						_logger.LogInformation("\tНет новых данных.");
+						_logger.LogInformation("\tNew data not found.");
 					}
 				}
 
-				await Task.Delay(config.HoursInterval * 24 * 3600000 - (int)(DateTime.Now.TimeOfDay.TotalMilliseconds - startTime.TimeOfDay.TotalMilliseconds), stoppingToken);
+				await Task.Delay(_config.HoursInterval * 24 * 3600000 - (int)(DateTime.Now.TimeOfDay.TotalMilliseconds - startTime.TimeOfDay.TotalMilliseconds), stoppingToken);
 			}
 		}
 	}
